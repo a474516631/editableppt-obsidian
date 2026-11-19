@@ -13,7 +13,10 @@ vi.mock('obsidian', () => {
       this.commands.push(command);
     }
     addRibbonIcon() {}
-    addSettingTab() {}
+    tab: unknown;
+    addSettingTab(tab: unknown) {
+      this.tab = tab;
+    }
     registerEvent() {}
     async loadData() {
       return this.data;
@@ -55,7 +58,12 @@ vi.mock('obsidian', () => {
     Setting,
     TFile,
     MarkdownView: class {},
-    PluginSettingTab: class {},
+    PluginSettingTab: class {
+      constructor(
+        public app: unknown,
+        public plugin: unknown
+      ) {}
+    },
     Platform: { isDesktopApp: false },
     normalizePath: (path: string) => path.replace(/\/+/g, '/').replace(/^\/|\/$/g, ''),
     getLanguage: () => 'en',
@@ -111,6 +119,12 @@ const note = (path: string) => {
     parent: { path: slash < 0 ? '/' : path.slice(0, slash) },
   };
 };
+
+interface SettingsTabLike {
+  getSettingDefinitions(): { name: string; control?: { key: string } }[];
+  getControlValue(key: string): unknown;
+  setControlValue(key: string, value: unknown): Promise<void>;
+}
 
 async function load(notes: Record<string, string>) {
   const { default: PluginClass } = await import('../src/main');
@@ -174,6 +188,21 @@ describe('plugin', () => {
     await plugin.exportNote(note('Note.md') as never);
     expect(modals).toHaveLength(1);
     expect(files.get('Note.pptx')!.data).toBe(theirs);
+  });
+
+  it('describes every setting for the settings tab and saves a change', async () => {
+    vi.stubGlobal('createFragment', () => ({}));
+    const { plugin } = await load({});
+    const tab = (plugin as unknown as { tab: SettingsTabLike }).tab;
+    const keys = tab.getSettingDefinitions().flatMap((item) => (item.control ? [item.control.key] : []));
+    expect([...keys].sort()).toEqual(
+      Object.keys(plugin.settings).filter((key) => key !== 'exports').sort()
+    );
+    expect(tab.getControlValue('theme')).toBe('light');
+    await tab.setControlValue('theme', 'dark');
+    expect(plugin.settings.theme).toBe('dark');
+    expect(((await plugin.loadData()) as { theme: string }).theme).toBe('dark');
+    vi.unstubAllGlobals();
   });
 
   it('says so instead of writing a deck for an empty note', async () => {

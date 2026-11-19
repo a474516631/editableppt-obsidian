@@ -47,6 +47,7 @@ const en = {
   folder_placeholder: 'Same folder as the note',
   open_name: 'Open after export',
   open_desc: 'Open the file in your presentation app.',
+  about_name: 'About',
   about:
     'Slides are built on this device from the text of your note. Nothing is uploaded.',
   about_link: 'Need designed slides? EditablePPT can design them with AI.',
@@ -97,6 +98,7 @@ const zh: typeof en = {
   folder_placeholder: '与笔记相同的文件夹',
   open_name: '导出后打开',
   open_desc: '用演示文稿应用打开导出的文件。',
+  about_name: '关于',
   about: '幻灯片在本机根据笔记文字生成，不会上传任何内容。',
   about_link: '需要有设计感的幻灯片？EditablePPT 可以用 AI 设计。',
 };

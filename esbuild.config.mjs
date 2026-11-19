@@ -1,20 +1,40 @@
-import { builtinModules } from 'node:module';
+import { builtinModules, createRequire } from 'node:module';
 import esbuild from 'esbuild';
 
 const production = process.argv[2] === 'production';
 
-// pptxgenjs reads files and URLs through Node when it can. Images reach it as
-// data URLs, so those paths are never taken; stubbing the modules keeps Node
-// APIs out of a bundle that also runs on mobile.
-const noNodeModules = {
-  name: 'no-node-modules',
+const require = createRequire(import.meta.url);
+
+// Modules that must not reach the bundle, and what stands in for each.
+const STUBS = {
+  // pptxgenjs reads files and URLs through Node when it can. Images reach it
+  // as data URLs, so those paths are never taken.
+  'node:fs': 'export default undefined; export const promises = undefined;',
+  'node:https': 'export default undefined;',
+  // JSZip's Node stream support; without it JSZip reports streams as unavailable.
+  'readable-stream': 'module.exports = {};',
+  // JSZip's polyfills for browsers without Promise or setImmediate. Both can
+  // create script elements. Promise always exists here, and src/set-immediate.ts
+  // is injected for setImmediate.
+  lie: 'module.exports = Promise;',
+  setimmediate: '',
+};
+
+const leanDependencies = {
+  name: 'lean-dependencies',
   setup(build) {
-    build.onResolve({ filter: /^node:(fs|https)$/ }, (args) => ({
-      path: args.path,
-      namespace: 'node-stub',
+    // For browsers JSZip resolves to a prebuilt file with its polyfills baked
+    // in. Its source is bundled instead, so they can be left out.
+    build.onResolve({ filter: /^jszip$/ }, () => ({
+      path: require.resolve('jszip/lib/index.js'),
     }));
-    build.onLoad({ filter: /.*/, namespace: 'node-stub' }, () => ({
-      contents: 'export default undefined; export const promises = undefined;',
+    const names = Object.keys(STUBS).join('|');
+    build.onResolve({ filter: new RegExp(`^(${names})$`) }, (args) => ({
+      path: args.path,
+      namespace: 'stub',
+    }));
+    build.onLoad({ filter: /.*/, namespace: 'stub' }, (args) => ({
+      contents: STUBS[args.path],
     }));
   },
 };
@@ -29,7 +49,8 @@ const context = await esbuild.context({
     '@lezer/*',
     ...builtinModules,
   ],
-  plugins: [noNodeModules],
+  plugins: [leanDependencies],
+  inject: ['src/set-immediate.ts'],
   format: 'cjs',
   target: 'es2020',
   platform: 'browser',

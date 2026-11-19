@@ -8,6 +8,7 @@ import {
   Plugin,
   PluginSettingTab,
   Setting,
+  type SettingDefinition,
   TFile,
 } from 'obsidian';
 
@@ -38,6 +39,9 @@ interface Settings {
   /** What this plugin last wrote, to tell its own files from edited ones. */
   exports: Record<string, ExportRecord>;
 }
+
+/** The settings a user edits in the settings tab. */
+type SettingKey = Exclude<keyof Settings, 'exports'>;
 
 const DEFAULTS: Settings = {
   split: 'auto',
@@ -193,7 +197,7 @@ export default class NoteToPowerPointPlugin extends Plugin {
       const naturalW = image.naturalWidth || 1200;
       const naturalH = image.naturalHeight || 900;
       const scale = Math.min(1, MAX_IMAGE_EDGE / Math.max(naturalW, naturalH));
-      const canvas = document.createElement('canvas');
+      const canvas = createEl('canvas');
       canvas.width = Math.max(1, Math.round(naturalW * scale));
       canvas.height = Math.max(1, Math.round(naturalH * scale));
       const context = canvas.getContext('2d');
@@ -338,117 +342,125 @@ class SettingsTab extends PluginSettingTab {
     super(app, plugin);
   }
 
-  override display() {
-    const { containerEl } = this;
-    const { settings } = this.plugin;
-    containerEl.empty();
-    const save = () => void this.plugin.saveSettings();
-
-    new Setting(containerEl)
-      .setName(t('split_name'))
-      .setDesc(t('split_desc'))
-      .addDropdown((dropdown) =>
-        dropdown
-          .addOptions({
+  override getSettingDefinitions(): SettingDefinition<SettingKey>[] {
+    return [
+      {
+        name: t('split_name'),
+        desc: t('split_desc'),
+        control: {
+          type: 'dropdown',
+          key: 'split',
+          options: {
             auto: t('split_auto'),
             rule: t('split_rule'),
             h1: t('split_h1'),
             h2: t('split_h2'),
             h3: t('split_h3'),
-          })
-          .setValue(settings.split)
-          .onChange((value) => {
-            settings.split = value as SplitMode;
-            save();
-          })
-      );
-    new Setting(containerEl)
-      .setName(t('title_slide_name'))
-      .setDesc(t('title_slide_desc'))
-      .addToggle((toggle) =>
-        toggle.setValue(settings.titleSlide).onChange((value) => {
-          settings.titleSlide = value;
-          save();
-        })
-      );
-    new Setting(containerEl).setName(t('theme_name')).addDropdown((dropdown) =>
-      dropdown
-        .addOptions({
-          light: t('theme_light'),
-          paper: t('theme_paper'),
-          dark: t('theme_dark'),
-          violet: t('theme_violet'),
-        })
-        .setValue(settings.theme)
-        .onChange((value) => {
-          settings.theme = value as ThemeId;
-          save();
-        })
-    );
-    new Setting(containerEl).setName(t('ratio_name')).addDropdown((dropdown) =>
-      dropdown
-        .addOptions({ '16:9': t('ratio_wide'), '4:3': t('ratio_standard') })
-        .setValue(settings.ratio)
-        .onChange((value) => {
-          settings.ratio = value as Ratio;
-          save();
-        })
-    );
-    new Setting(containerEl)
-      .setName(t('font_name'))
-      .setDesc(t('font_desc'))
-      .addText((text) =>
-        text
-          .setPlaceholder(DEFAULTS.font)
-          .setValue(settings.font)
-          .onChange((value) => {
-            settings.font = value;
-            save();
-          })
-      );
-    new Setting(containerEl).setName(t('mono_font_name')).addText((text) =>
-      text
-        .setPlaceholder(DEFAULTS.monoFont)
-        .setValue(settings.monoFont)
-        .onChange((value) => {
-          settings.monoFont = value;
-          save();
-        })
-    );
-    new Setting(containerEl).setName(t('numbers_name')).addToggle((toggle) =>
-      toggle.setValue(settings.slideNumbers).onChange((value) => {
-        settings.slideNumbers = value;
-        save();
-      })
-    );
-    new Setting(containerEl)
-      .setName(t('folder_name'))
-      .setDesc(t('folder_desc'))
-      .addText((text) =>
-        text
-          .setPlaceholder(t('folder_placeholder'))
-          .setValue(settings.folder)
-          .onChange((value) => {
-            settings.folder = value;
-            save();
-          })
-      );
-    if (Platform.isDesktopApp)
-      new Setting(containerEl)
-        .setName(t('open_name'))
-        .setDesc(t('open_desc'))
-        .addToggle((toggle) =>
-          toggle.setValue(settings.openAfterExport).onChange((value) => {
-            settings.openAfterExport = value;
-            save();
-          })
-        );
+          },
+        },
+      },
+      {
+        name: t('title_slide_name'),
+        desc: t('title_slide_desc'),
+        control: { type: 'toggle', key: 'titleSlide' },
+      },
+      {
+        name: t('theme_name'),
+        control: {
+          type: 'dropdown',
+          key: 'theme',
+          options: {
+            light: t('theme_light'),
+            paper: t('theme_paper'),
+            dark: t('theme_dark'),
+            violet: t('theme_violet'),
+          },
+        },
+      },
+      {
+        name: t('ratio_name'),
+        control: {
+          type: 'dropdown',
+          key: 'ratio',
+          options: { '16:9': t('ratio_wide'), '4:3': t('ratio_standard') },
+        },
+      },
+      {
+        name: t('font_name'),
+        desc: t('font_desc'),
+        control: { type: 'text', key: 'font', placeholder: DEFAULTS.font },
+      },
+      {
+        name: t('mono_font_name'),
+        control: { type: 'text', key: 'monoFont', placeholder: DEFAULTS.monoFont },
+      },
+      {
+        name: t('numbers_name'),
+        control: { type: 'toggle', key: 'slideNumbers' },
+      },
+      {
+        name: t('folder_name'),
+        desc: t('folder_desc'),
+        control: {
+          type: 'folder',
+          key: 'folder',
+          placeholder: t('folder_placeholder'),
+        },
+      },
+      {
+        name: t('open_name'),
+        desc: t('open_desc'),
+        visible: () => Platform.isDesktopApp,
+        control: { type: 'toggle', key: 'openAfterExport' },
+      },
+      {
+        name: t('about_name'),
+        searchable: false,
+        desc: createFragment((el) => {
+          el.appendText(t('about') + ' ');
+          el.createEl('a', {
+            text: t('about_link'),
+            href: 'https://editableppt.com/agent-ppt?utm_source=obsidian&utm_medium=plugin',
+          });
+        }),
+      },
+    ];
+  }
 
-    const about = containerEl.createEl('p', { cls: 'setting-item-description' });
-    about.appendText(t('about') + ' ');
-    about.createEl('a', {
-      text: t('about_link'),
-      href: 'https://editableppt.com/agent-ppt?utm_source=obsidian&utm_medium=plugin',
-    });
+  override getControlValue(key: string) {
+    return this.plugin.settings[key as SettingKey];
+  }
+
+  override async setControlValue(key: string, value: unknown) {
+    Object.assign(this.plugin.settings, { [key]: value });
+    await this.plugin.saveSettings();
+  }
+
+  /** Obsidian before 1.13 doesn't read the definitions above and calls this instead. */
+  override display() {
+    this.containerEl.empty();
+    for (const item of this.getSettingDefinitions()) {
+      const visible = typeof item.visible === 'function' ? item.visible() : item.visible;
+      if (visible === false) continue;
+      const setting = new Setting(this.containerEl).setName(item.name);
+      if (item.desc) setting.setDesc(item.desc);
+      const { control } = item;
+      if (!control) continue;
+      const value = this.getControlValue(control.key);
+      const save = (next: unknown) => void this.setControlValue(control.key, next);
+      if (control.type === 'toggle')
+        setting.addToggle((toggle) => toggle.setValue(value === true).onChange(save));
+      else if (control.type === 'dropdown')
+        setting.addDropdown((dropdown) =>
+          dropdown.addOptions(control.options).setValue(String(value)).onChange(save)
+        );
+      else if (control.type === 'text' || control.type === 'folder')
+        setting.addText((text) =>
+          text
+            .setPlaceholder(control.placeholder ?? '')
+            .setValue(String(value ?? ''))
+            .onChange(save)
+        );
+    }
   }
 }

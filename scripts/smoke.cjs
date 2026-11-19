@@ -61,6 +61,8 @@ const app = {
   console.log('commands:', plugin.commands.join(', '));
   console.log('written: Review.pptx', data.byteLength, 'bytes');
   console.log('notices:', notices.join(' | '));
+  // The bundle's open message channel would keep Node running.
+  process.exit(0);
 })().catch((error) => {
   console.error(String(error && error.stack ? error.stack : error).slice(0, 2000));
   process.exit(1);
