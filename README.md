@@ -5,17 +5,31 @@ become slides, and everything on them is a real PowerPoint object: text boxes,
 bulleted and numbered lists, native tables, embedded images and speaker notes.
 Nothing is flattened into a picture.
 
-The deck is built on your device from the text of the note. The plugin makes no
-network requests, needs no account and has no paid features.
+**Export** builds the deck on your device from the text of the note. It makes
+no network requests, needs no account and is free.
 
-Disclosure: the settings tab shows one text link to
-[EditablePPT](https://editableppt.com), the service that maintains this plugin.
-It opens in your browser only if you click it.
+**AI design** is optional. It sends the note to
+[EditablePPT](https://editableppt.com), the service that maintains this
+plugin, to design the deck in one of its templates, and needs an account and
+credits there. It runs only when you start it. See
+[AI design](#ai-design-optional) for exactly what is sent.
+
+## Disclosures
+
+- **Network use**: only AI design uses the network. It talks to
+  `editableppt.com` to sign in, write the outline, draw the slides, make them
+  editable and download the finished file. The template pictures in its dialog
+  load from the same site. Export never uses the network.
+- **Account required** for AI design: an EditablePPT account. Export needs none.
+- **Payment required** for AI design: it uses credits from your EditablePPT
+  account, priced as on the website. Export is free.
+- **No telemetry**: the plugin collects no usage data. Requests to EditablePPT
+  are handled under its [privacy policy](https://editableppt.com/privacy-policy).
 
 ## Install
 
 Until the plugin is listed in the community directory, install it by hand:
-download `main.js` and `manifest.json` from the
+download `main.js`, `manifest.json` and `styles.css` from the
 [latest release](https://github.com/a474516631/editableppt-obsidian/releases/latest),
 put them in `<vault>/.obsidian/plugins/note-to-powerpoint/`, then enable
 **Note to PowerPoint** under Settings → Community plugins.
@@ -37,6 +51,31 @@ desktop, opened in your presentation app.
 Exporting again replaces the previous export. If the file was changed since the
 plugin wrote it, or the plugin didn't write it, you are asked first and can
 keep both.
+
+## AI design (optional)
+
+Run **Note to PowerPoint: Design with an EditablePPT template (AI)**, or
+right-click a note and choose **Design as PowerPoint with AI**.
+
+1. **Sign in.** The first time, your browser opens `editableppt.com` to approve
+   the plugin. The plugin then keeps a sign-in key in Obsidian's keychain
+   (Obsidian 1.11.4 or later), not in the vault. Sign out under Settings →
+   Note to PowerPoint; that also revokes the key.
+2. **Pick a template** and the deck language, then **Write the outline**. The
+   note is sent as Markdown, without its front matter and `%%comments%%`.
+   Images and linked notes are not sent.
+3. **Check the outline.** Write it again, or go on to **Preview the design**:
+   two previews of the template are drawn and you pick a layout.
+4. **Make the slides.** Every slide is drawn, then rebuilt as editable
+   PowerPoint text and shapes, and the file is saved as
+   `<note> (EditablePPT).pptx` next to the note (or in the folder you set).
+   This takes a few minutes and keeps going if you close the dialog; the status
+   bar shows progress. If Obsidian closes first, it resumes the next time, or
+   run **Continue the AI-designed deck**.
+
+Credits are charged as on the website: the outline, the previews and the
+drawing by usage, and a fixed amount per slide to make it editable (shown
+before you start). A slide that can't be made editable is left out and named.
 
 ## How a note becomes slides
 
@@ -73,8 +112,9 @@ the next slide.
   embedded, so pick ones installed where the deck will be opened.
 - **Save to**: a vault folder, or next to the note.
 - **Open after export** (desktop).
+- **AI design**: sign in to or out of EditablePPT.
 
-## What it does not do
+## What export does not do
 
 - Images on the web (`![](https://...)`) are skipped, because the plugin never
   uses the network. Images in the vault are embedded. WebP, SVG, GIF and very
@@ -98,7 +138,7 @@ npm test
 npm run sample   # build decks from samples/*.md into output/, without Obsidian
 ```
 
-To try a build, copy `main.js` and `manifest.json` into
+To try a build, copy `main.js`, `manifest.json` and `styles.css` into
 `<vault>/.obsidian/plugins/note-to-powerpoint/` and enable the plugin.
 
 `scripts/render-keynote.sh output/<name>.pptx` renders a deck to PNG pages
@@ -108,8 +148,10 @@ of it.
 The pipeline is `src/parse.ts` (Markdown to blocks), `src/outline.ts` (blocks
 to slides), `src/layout.ts` (slides to positioned frames, including the split
 over several pages), and `src/render.ts` (frames to PPTX with
-[PptxGenJS](https://github.com/gitbrent/PptxGenJS)). Only `src/main.ts` knows
-about Obsidian.
+[PptxGenJS](https://github.com/gitbrent/PptxGenJS)). AI design lives in
+`src/cloud/`: `api.ts` and `job.ts` (the EditablePPT calls, no Obsidian), then
+`controller.ts` and `modal.ts`. To point it at a local EditablePPT server, set
+`"serviceUrl"` in the plugin's `data.json`.
 
 ## License
 

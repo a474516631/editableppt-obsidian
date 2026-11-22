@@ -6,12 +6,17 @@ import {
   Notice,
   Platform,
   Plugin,
+  requireApiVersion,
   PluginSettingTab,
   Setting,
   type SettingDefinition,
+  type SettingDefinitionItem,
   TFile,
 } from 'obsidian';
 
+import { DeckController, type SecretStore, SERVICE_URL } from './cloud/controller';
+import type { DeckLocale, JobState } from './cloud/job';
+import { DeckModal } from './cloud/modal';
 import { buildDeck } from './deck';
 import { t } from './i18n';
 import { readImageSize, toBase64 } from './image';
@@ -38,10 +43,20 @@ interface Settings {
   openAfterExport: boolean;
   /** What this plugin last wrote, to tell its own files from edited ones. */
   exports: Record<string, ExportRecord>;
+  /** AI design: the deck being made on EditablePPT, if any. */
+  cloudJob: JobState | null;
+  /** AI design: the last template and language picked. */
+  cloudStyle: string;
+  cloudLocale: DeckLocale;
+  /** EditablePPT address; only changed by hand in data.json, for development. */
+  serviceUrl: string;
 }
 
 /** The settings a user edits in the settings tab. */
-type SettingKey = Exclude<keyof Settings, 'exports'>;
+type SettingKey = Exclude<
+  keyof Settings,
+  'exports' | 'cloudJob' | 'cloudStyle' | 'cloudLocale' | 'serviceUrl'
+>;
 
 const DEFAULTS: Settings = {
   split: 'auto',
@@ -54,6 +69,10 @@ const DEFAULTS: Settings = {
   folder: '',
   openAfterExport: true,
   exports: {},
+  cloudJob: null,
+  cloudStyle: 'clean-tech-blue',
+  cloudLocale: 'auto',
+  serviceUrl: SERVICE_URL,
 };
 
 /** Larger images are scaled down so a deck of photos stays a reasonable size. */
@@ -101,6 +120,7 @@ class ReplaceModal extends Modal {
 export default class NoteToPowerPointPlugin extends Plugin {
   override settings: Settings = DEFAULTS;
   private busy = false;
+  deckController!: DeckController;
 
   override async onload() {
     await this.loadSettings();
@@ -130,12 +150,129 @@ export default class NoteToPowerPointPlugin extends Plugin {
         );
       })
     );
+    this.setUpDesign();
     this.addSettingTab(new SettingsTab(this.app, this));
+  }
+
+  override onunload() {
+    this.deckController?.stop();
+  }
+
+  /** The optional AI design feature (EditablePPT account). Nothing runs until the user starts it. */
+  private setUpDesign() {
+    const app = this.app as App & { secretStorage?: SecretStore };
+    // The keychain arrived in 1.11.4; older apps can't use AI design (the dialog says so).
+    const secrets = requireApiVersion('1.11.4') ? app.secretStorage : undefined;
+    this.deckController = new DeckController(
+      {
+        serviceUrl: () => this.settings.serviceUrl || SERVICE_URL,
+        job: () => this.settings.cloudJob,
+        saveJob: async (job) => {
+          this.settings.cloudJob = job;
+          await this.saveSettings();
+        },
+        readNote: async (path) => {
+          const file = this.app.vault.getFileByPath(path);
+          return file ? { markdown: await this.readNote(file), basename: file.basename } : null;
+        },
+        saveDeck: (job, data) => this.saveDesignedDeck(job, data),
+        openFile: (path) => {
+          if (this.settings.openAfterExport) this.openExternally(path);
+        },
+      },
+      secrets
+    );
+    this.addCommand({
+      id: 'design-with-template',
+      name: t('cloud_command'),
+      checkCallback: (checking) => {
+        const file = this.app.workspace.getActiveFile();
+        if (file?.extension !== 'md') return false;
+        if (!checking) this.openDesign(file);
+        return true;
+      },
+    });
+    this.addCommand({
+      id: 'continue-design',
+      name: t('cloud_continue_command'),
+      checkCallback: (checking) => {
+        if (!this.settings.cloudJob) return false;
+        if (!checking) this.openDesign(null);
+        return true;
+      },
+    });
+    this.registerEvent(
+      this.app.workspace.on('file-menu', (menu, file) => {
+        if (!(file instanceof TFile) || file.extension !== 'md') return;
+        menu.addItem((item) =>
+          item
+            .setTitle(t('cloud_menu'))
+            .setIcon('sparkles')
+            .onClick(() => this.openDesign(file))
+        );
+      })
+    );
+    const status = this.addStatusBarItem();
+    status.addClass('mod-clickable');
+    status.hide();
+    status.onClickEvent(() => this.openDesign(null));
+    this.register(
+      this.deckController.subscribe(() => {
+        const { busy, progress } = this.deckController;
+        if (busy === 'build' && progress && 'total' in progress) {
+          status.setText(t('cloud_status', { done: progress.done, total: progress.total }));
+          status.show();
+        } else status.hide();
+      })
+    );
+    // A deck that was being built when Obsidian closed picks up where it stopped.
+    this.app.workspace.onLayoutReady(() => {
+      const job = this.settings.cloudJob;
+      if (!job || !this.deckController.signedIn) return;
+      if (job.stage === 'build') void this.deckController.build();
+      else new Notice(t('cloud_waiting'), 10000);
+    });
+  }
+
+  openDesign(file: TFile | null) {
+    new DeckModal(this.app, this.deckController, {
+      file,
+      readNote: (note) => this.readNote(note),
+      style: this.settings.cloudStyle,
+      locale: this.settings.cloudLocale,
+      remember: ({ style, locale }) => {
+        this.settings.cloudStyle = style;
+        this.settings.cloudLocale = locale;
+        void this.saveSettings();
+      },
+      openFile: (path) => this.openExternally(path),
+    }).open();
+  }
+
+  private openExternally(path: string) {
+    const app = this.app as App & { openWithDefaultApp?: (path: string) => unknown };
+    if (Platform.isDesktopApp) app.openWithDefaultApp?.(path);
+  }
+
+  /** Saves a designed deck next to its note, as "<note> (EditablePPT).pptx". */
+  private async saveDesignedDeck(job: JobState, data: ArrayBuffer) {
+    const note = this.app.vault.getFileByPath(job.notePath);
+    const folder = this.settings.folder.trim().replace(/^\/+|\/+$/g, '');
+    const parent = folder || note?.parent?.path || '';
+    const dir = parent === '/' ? '' : parent;
+    const stem = (note?.basename || job.title || 'Presentation').replace(/[\\/:*?"<>|#^[\]]/g, ' ').trim();
+    const path = await this.resolveTarget(
+      normalizePath((dir ? dir + '/' : '') + `${stem} (EditablePPT).pptx`)
+    );
+    if (!path) return null;
+    await this.write(path, data);
+    return path;
   }
 
   async loadSettings() {
     const saved = ((await this.loadData()) ?? {}) as Partial<Settings>;
     this.settings = { ...DEFAULTS, ...saved, exports: { ...saved.exports } };
+    if (!['auto', 'zh', 'en'].includes(this.settings.cloudLocale)) this.settings.cloudLocale = 'auto';
     if (!(this.settings.theme in THEMES)) this.settings.theme = DEFAULTS.theme;
   }
 
@@ -317,10 +454,7 @@ export default class NoteToPowerPointPlugin extends Plugin {
           }),
           10000
         );
-      if (this.settings.openAfterExport && Platform.isDesktopApp) {
-        const app = this.app as App & { openWithDefaultApp?: (path: string) => unknown };
-        app.openWithDefaultApp?.(path);
-      }
+      if (this.settings.openAfterExport) this.openExternally(path);
     } catch (error) {
       console.error('Note to PowerPoint: export failed', error);
       new Notice(
@@ -335,6 +469,8 @@ export default class NoteToPowerPointPlugin extends Plugin {
 }
 
 class SettingsTab extends PluginSettingTab {
+  private cleanup: (() => void) | null = null;
+
   constructor(
     app: App,
     private readonly plugin: NoteToPowerPointPlugin
@@ -342,7 +478,73 @@ class SettingsTab extends PluginSettingTab {
     super(app, plugin);
   }
 
-  override getSettingDefinitions(): SettingDefinition<SettingKey>[] {
+  override getSettingDefinitions(): SettingDefinitionItem<SettingKey>[] {
+    return [...this.exportDefinitions(), this.designGroup(), this.aboutDefinition()];
+  }
+
+  /** The account row of the AI design feature; redrawn when its state changes. */
+  private designGroup(): SettingDefinitionItem<SettingKey> {
+    const controller = this.plugin.deckController;
+    return {
+      type: 'group',
+      heading: t('cloud_settings_heading'),
+      items: [
+        {
+          name: t('cloud_settings_account'),
+          render: (setting: Setting) => this.renderAccount(setting),
+        },
+      ],
+      visible: () => controller.supported,
+    };
+  }
+
+  private renderAccount(setting: Setting) {
+    const controller = this.plugin.deckController;
+    const draw = () => {
+      setting.controlEl.empty();
+      const { account } = controller;
+      if (controller.busy === 'signin') setting.setDesc(t('cloud_signing_in'));
+      else if (controller.signedIn)
+        setting.setDesc(
+          account
+            ? t('cloud_account', { email: account.account.email, balance: account.balance })
+            : t('cloud_loading')
+        );
+      else setting.setDesc(t('cloud_settings_signed_out'));
+      if (controller.busy === 'signin')
+        setting.addButton((button) => button.setButtonText(t('exists_cancel')).onClick(() => controller.stop()));
+      else if (controller.signedIn)
+        setting.addButton((button) =>
+          button.setButtonText(t('cloud_sign_out')).onClick(async () => {
+            await controller.signOut();
+            new Notice(t('cloud_signed_out'));
+          })
+        );
+      else
+        setting.addButton((button) =>
+          button.setButtonText(t('cloud_sign_in')).setCta().onClick(() => void controller.signIn())
+        );
+    };
+    draw();
+    if (controller.signedIn && !controller.account) void controller.refreshAccount();
+    return controller.subscribe(draw);
+  }
+
+  private aboutDefinition(): SettingDefinition<SettingKey> {
+    return {
+      name: t('about_name'),
+      searchable: false,
+      desc: createFragment((el) => {
+        el.appendText(t('about') + ' ');
+        el.createEl('a', {
+          text: t('about_link'),
+          href: 'https://editableppt.com/agent-ppt?utm_source=obsidian&utm_medium=plugin',
+        });
+      }),
+    };
+  }
+
+  private exportDefinitions(): SettingDefinition<SettingKey>[] {
     return [
       {
         name: t('split_name'),
@@ -413,18 +615,13 @@ class SettingsTab extends PluginSettingTab {
         visible: () => Platform.isDesktopApp,
         control: { type: 'toggle', key: 'openAfterExport' },
       },
-      {
-        name: t('about_name'),
-        searchable: false,
-        desc: createFragment((el) => {
-          el.appendText(t('about') + ' ');
-          el.createEl('a', {
-            text: t('about_link'),
-            href: 'https://editableppt.com/agent-ppt?utm_source=obsidian&utm_medium=plugin',
-          });
-        }),
-      },
     ];
+  }
+
+  override hide() {
+    this.cleanup?.();
+    this.cleanup = null;
+    super.hide();
   }
 
   override getControlValue(key: string) {
@@ -439,28 +636,39 @@ class SettingsTab extends PluginSettingTab {
   /** Obsidian before 1.13 doesn't read the definitions above and calls this instead. */
   override display() {
     this.containerEl.empty();
-    for (const item of this.getSettingDefinitions()) {
-      const visible = typeof item.visible === 'function' ? item.visible() : item.visible;
-      if (visible === false) continue;
-      const setting = new Setting(this.containerEl).setName(item.name);
-      if (item.desc) setting.setDesc(item.desc);
-      const { control } = item;
-      if (!control) continue;
-      const value = this.getControlValue(control.key);
-      const save = (next: unknown) => void this.setControlValue(control.key, next);
-      if (control.type === 'toggle')
-        setting.addToggle((toggle) => toggle.setValue(value === true).onChange(save));
-      else if (control.type === 'dropdown')
-        setting.addDropdown((dropdown) =>
-          dropdown.addOptions(control.options).setValue(String(value)).onChange(save)
-        );
-      else if (control.type === 'text' || control.type === 'folder')
-        setting.addText((text) =>
-          text
-            .setPlaceholder(control.placeholder ?? '')
-            .setValue(String(value ?? ''))
-            .onChange(save)
-        );
+    this.cleanup?.();
+    this.cleanup = null;
+    for (const item of this.exportDefinitions()) this.renderPlain(item);
+    // AI design needs the keychain (1.11.4); before 1.13 it gets a plain heading and row.
+    if (this.plugin.deckController.supported) {
+      new Setting(this.containerEl).setName(t('cloud_settings_heading')).setHeading();
+      const unsubscribe = this.renderAccount(new Setting(this.containerEl).setName(t('cloud_settings_account')));
+      this.cleanup = () => void unsubscribe();
     }
+    this.renderPlain(this.aboutDefinition());
+  }
+
+  private renderPlain(item: SettingDefinition<SettingKey>) {
+    const visible = typeof item.visible === 'function' ? item.visible() : item.visible;
+    if (visible === false) return;
+    const setting = new Setting(this.containerEl).setName(item.name);
+    if (item.desc) setting.setDesc(item.desc);
+    const { control } = item;
+    if (!control) return;
+    const value = this.getControlValue(control.key);
+    const save = (next: unknown) => void this.setControlValue(control.key, next);
+    if (control.type === 'toggle')
+      setting.addToggle((toggle) => toggle.setValue(value === true).onChange(save));
+    else if (control.type === 'dropdown')
+      setting.addDropdown((dropdown) =>
+        dropdown.addOptions(control.options).setValue(String(value)).onChange(save)
+      );
+    else if (control.type === 'text' || control.type === 'folder')
+      setting.addText((text) =>
+        text
+          .setPlaceholder(control.placeholder ?? '')
+          .setValue(String(value ?? ''))
+          .onChange(save)
+      );
   }
 }

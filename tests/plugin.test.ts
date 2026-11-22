@@ -18,6 +18,10 @@ vi.mock('obsidian', () => {
       this.tab = tab;
     }
     registerEvent() {}
+    register() {}
+    addStatusBarItem() {
+      return { addClass() {}, hide() {}, show() {}, setText() {}, onClickEvent() {} };
+    }
     async loadData() {
       return this.data;
     }
@@ -67,6 +71,7 @@ vi.mock('obsidian', () => {
     Platform: { isDesktopApp: false },
     normalizePath: (path: string) => path.replace(/\/+/g, '/').replace(/^\/|\/$/g, ''),
     getLanguage: () => 'en',
+    requireApiVersion: () => true,
   };
 });
 
@@ -84,7 +89,12 @@ function fakeApp(notes: Record<string, string>) {
   };
   const handle = (path: string) => ({ path });
   const app = {
-    workspace: { getActiveViewOfType: () => null, getActiveFile: () => null, on: () => ({}) },
+    workspace: {
+      getActiveViewOfType: () => null,
+      getActiveFile: () => null,
+      on: () => ({}),
+      onLayoutReady: (callback: () => void) => callback(),
+    },
     metadataCache: {
       getFirstLinkpathDest: (link: string) =>
         link === 'pic.png' ? { path: 'assets/pic.png', extension: 'png' } : null,
@@ -121,7 +131,7 @@ const note = (path: string) => {
 };
 
 interface SettingsTabLike {
-  getSettingDefinitions(): { name: string; control?: { key: string } }[];
+  getSettingDefinitions(): { name?: string; control?: { key: string } }[];
   getControlValue(key: string): unknown;
   setControlValue(key: string, value: unknown): Promise<void>;
 }
@@ -140,10 +150,14 @@ beforeEach(() => {
 });
 
 describe('plugin', () => {
-  it('registers the export command', async () => {
+  it('registers the export and AI design commands', async () => {
     const { plugin } = await load({});
     const commands = (plugin as unknown as { commands: { id: string }[] }).commands;
-    expect(commands.map((command) => command.id)).toEqual(['export-current-note']);
+    expect(commands.map((command) => command.id)).toEqual([
+      'export-current-note',
+      'design-with-template',
+      'continue-design',
+    ]);
   });
 
   it('writes a deck next to the note, with its embedded image', async () => {
@@ -195,8 +209,11 @@ describe('plugin', () => {
     const { plugin } = await load({});
     const tab = (plugin as unknown as { tab: SettingsTabLike }).tab;
     const keys = tab.getSettingDefinitions().flatMap((item) => (item.control ? [item.control.key] : []));
+    const internal = ['exports', 'cloudJob', 'cloudStyle', 'cloudLocale', 'serviceUrl'];
     expect([...keys].sort()).toEqual(
-      Object.keys(plugin.settings).filter((key) => key !== 'exports').sort()
+      Object.keys(plugin.settings)
+        .filter((key) => !internal.includes(key))
+        .sort()
     );
     expect(tab.getControlValue('theme')).toBe('light');
     await tab.setControlValue('theme', 'dark');
